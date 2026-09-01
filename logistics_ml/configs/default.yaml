@@ -1,0 +1,365 @@
+# =============================================================================
+# Logistics Optimization ML Platform - default configuration
+# =============================================================================
+# The whole platform is config-driven. Override any subset with a second YAML
+# passed via --config, or with --set key.path=value on the CLI.
+# -----------------------------------------------------------------------------
+
+project:
+  name: logistics-ml-platform
+  seed: 20260807
+  output_dir: ../artifacts                # relative to this config file
+  n_jobs: -1
+
+# -----------------------------------------------------------------------------
+# Where the dataset from prompt 01 lives
+# -----------------------------------------------------------------------------
+data:
+  source: parquet                        # parquet | csv | sqlite
+  # Relative paths resolve against this config file's directory.
+  path: ../../logistics_datagen/data/sample/parquet
+  sqlite_path: ../../logistics_datagen/data/sample/sqlite/logistics.db
+  primary_table: ml_features             # the wide modelling table
+  # Cap rows for fast iteration. null = use everything.
+  max_rows: null
+  # Columns that identify a record but carry no signal.
+  id_columns: [order_id, customer_id, driver_id, vehicle_id, warehouse_id,
+               route_id, zone_id, pickup_location_id]
+
+  # ---------------------------------------------------------------------------
+  # LEAKAGE GUARD.
+  # `ml_features` is the *raw* wide table from the generator and deliberately
+  # still contains the realised outcome of every delivery. Those columns are
+  # unknowable at prediction time - a dispatcher scoring an order at 09:00 does
+  # not yet know what it actually cost or how late it ran. Left in, they push
+  # ROC-AUC to 1.000 and the model learns nothing useful.
+  #
+  # Anything listed here is dropped from the feature matrix for every task,
+  # after the target has been extracted (so a task can still *predict* one of
+  # them). Planned/estimated quantities known up front - distance_km,
+  # planned_duration_min, sla_hours, lead_time_hours - are intentionally kept.
+  # ---------------------------------------------------------------------------
+  leakage_columns:
+    # realised outcome
+    - is_late
+    - delay_minutes
+    - status
+    - actual_delivery_ts
+    - actual_duration_min
+    - delivery_attempts
+    # duration components that sum to the outcome
+    - travel_minutes
+    - service_minutes
+    - handling_minutes
+    # realised costs and revenue
+    - delivery_cost_usd
+    - labour_cost_usd
+    - fuel_cost_usd
+    - toll_cost_usd
+    - handling_cost_usd
+    - revenue_usd
+    - margin_usd
+    - margin_pct
+    - cost_per_km_usd
+    - cost_per_kg_usd
+    - co2_kg
+    - co2_per_km
+    # realised efficiency ratios
+    - speed_kmh_effective
+    - planned_vs_actual_ratio
+    - sla_utilisation
+    - route_on_time_rate
+    # generator-internal score behind the risk bucket
+    - target_risk_score
+
+# -----------------------------------------------------------------------------
+# Prediction tasks. `default_task` runs unless --task says otherwise.
+# Each task names its target, its type, and any extra columns that would leak.
+# -----------------------------------------------------------------------------
+default_task: late_delivery
+
+tasks:
+  # DISPATCH-TIME framing: the order has been picked and assigned, and we are
+  # deciding whether to expedite. `lead_time_hours` (order -> pickup) is known.
+  late_delivery:
+    description: Will this delivery breach its SLA? (scored at dispatch)
+    target: target_is_late
+    type: binary
+    positive_label: 1
+    primary_metric: roc_auc
+    extra_leakage: []
+
+  # ORDER-TIME framing: scored the moment the order lands, before anything is
+  # scheduled. Strictly harder - the single strongest feature is gone - but it
+  # is the honest setup if you want to quote a delivery promise up front.
+  late_delivery_predispatch:
+    description: Will this delivery breach its SLA? (scored at order entry)
+    target: target_is_late
+    type: binary
+    positive_label: 1
+    primary_metric: roc_auc
+    extra_leakage: [lead_time_hours, pickup_timestamp, stop_sequence,
+                    stops_ahead, route_stops, route_type, route_utilisation_kg,
+                    route_optimisation_engine]
+
+  delivery_delay:
+    description: How many minutes late or early will it be?
+    target: target_delay_minutes
+    type: regression
+    primary_metric: rmse
+    extra_leakage: [target_is_late]
+
+  eta_prediction:
+    description: How long will this delivery take door to door?
+    target: target_eta_minutes
+    type: regression
+    primary_metric: rmse
+    extra_leakage: []
+
+  cost_prediction:
+    description: What will it cost to serve this order?
+    target: target_delivery_cost_usd
+    type: regression
+    primary_metric: rmse
+    extra_leakage: []
+
+  risk_classification:
+    description: Low / medium / high delivery risk.
+    target: target_risk_bucket
+    type: multiclass
+    primary_metric: f1_macro
+    extra_leakage: [target_risk_score, target_is_late, target_delay_minutes]
+
+  route_failure:
+    description: Will the delivery fail outright?
+    target: target_will_be_returned
+    type: binary
+    positive_label: 1
+    primary_metric: roc_auc
+    extra_leakage: []
+
+  # Tasks below build their own target from a non-orders table (see
+  # logisticsml.data.build_auxiliary_task).
+  vehicle_failure:
+    description: Will this vehicle need unplanned maintenance?
+    source_table: vehicles
+    build: vehicle_failure
+    target: will_fail
+    type: binary
+    primary_metric: roc_auc
+
+  inventory_shortage:
+    description: Will this SKU stock out at this site?
+    source_table: inventory
+    build: inventory_shortage
+    target: will_stockout
+    type: binary
+    primary_metric: roc_auc
+
+  fraud_detection:
+    description: Is this order fraudulent?
+    source_table: orders
+    build: fraud
+    target: is_fraud
+    type: binary
+    primary_metric: average_precision
+
+  warehouse_congestion:
+    description: Will this site exceed its throughput capacity?
+    source_table: orders
+    build: warehouse_congestion
+    target: is_congested
+    type: binary
+    primary_metric: roc_auc
+
+# -----------------------------------------------------------------------------
+# Splitting. Time-based is the honest default for a forecasting problem -
+# a random split lets the model see the future.
+# -----------------------------------------------------------------------------
+split:
+  strategy: temporal                     # temporal | random | group
+  time_column: order_timestamp
+  test_size: 0.2
+  val_size: 0.1
+  group_column: route_id                 # used when strategy == group
+  stratify: true                         # random + classification only
+
+# -----------------------------------------------------------------------------
+# Preprocessing (fit on train only - no leakage across the split boundary)
+# -----------------------------------------------------------------------------
+preprocessing:
+  impute_numeric: median
+  impute_categorical: most_frequent
+  categorical_encoding: ordinal          # ordinal | onehot
+  max_onehot_cardinality: 20
+  scale_numeric: standard                # standard | minmax | robust | none
+  add_missing_indicators: true
+  drop_constant: true
+  drop_high_cardinality_above: 5000
+  variance_threshold: 0.0
+
+# -----------------------------------------------------------------------------
+# Exploratory Data Analysis
+# -----------------------------------------------------------------------------
+eda:
+  enabled: true
+  max_plot_columns: 24
+  correlation_top_n: 30
+  target_relationship_top_n: 12
+  plot_format: png
+  dpi: 110
+
+# -----------------------------------------------------------------------------
+# Supervised learning
+# -----------------------------------------------------------------------------
+supervised:
+  enabled: true
+  # Subsample only for model fitting; evaluation always uses the full test set.
+  train_sample: 40000
+  cv_folds: 3
+  calibrate: true                        # isotonic calibration for classifiers
+  models:
+    logistic_regression: {enabled: true}
+    decision_tree:       {enabled: true, max_depth: 12, min_samples_leaf: 20}
+    random_forest:       {enabled: true, n_estimators: 300, max_depth: 18, min_samples_leaf: 5}
+    gradient_boosting:   {enabled: true, n_estimators: 200, max_depth: 3, learning_rate: 0.1}
+    xgboost:             {enabled: true, n_estimators: 400, max_depth: 6, learning_rate: 0.08, subsample: 0.9, colsample_bytree: 0.9}
+    lightgbm:            {enabled: true, n_estimators: 400, num_leaves: 63, learning_rate: 0.08, subsample: 0.9}
+    catboost:            {enabled: true, iterations: 400, depth: 6, learning_rate: 0.08}
+    knn:                 {enabled: true, n_neighbors: 25, weights: distance, max_train: 20000}
+    svm:                 {enabled: true, kernel: rbf, C: 1.0, max_train: 8000}
+
+  hyperparameter_search:
+    enabled: false                       # flip on for a randomised search
+    n_iter: 15
+    scoring: null                        # defaults to the task's primary metric
+
+# -----------------------------------------------------------------------------
+# Unsupervised learning
+# -----------------------------------------------------------------------------
+unsupervised:
+  enabled: true
+  sample_size: 12000                     # t-SNE / UMAP are O(n^2)-ish
+  clustering:
+    kmeans:   {enabled: true, k_range: [2, 3, 4, 5, 6, 7, 8]}
+    dbscan:   {enabled: true, eps: 1.6, min_samples: 25}
+    gmm:      {enabled: true, n_components: [2, 3, 4, 5, 6]}
+  dimensionality_reduction:
+    pca:  {enabled: true, n_components: 10}
+    tsne: {enabled: true, n_components: 2, perplexity: 30, sample_size: 4000}
+    umap: {enabled: true, n_components: 2, n_neighbors: 15, min_dist: 0.1}
+  anomaly_detection:
+    isolation_forest: {enabled: true, contamination: 0.02, n_estimators: 200}
+
+# -----------------------------------------------------------------------------
+# Deep learning.
+# Torch implementations are used when torch is installed; otherwise the
+# platform falls back to scikit-learn equivalents so the stage still runs.
+# -----------------------------------------------------------------------------
+deep_learning:
+  enabled: true
+  backend: auto                          # auto | torch | sklearn
+  epochs: 30
+  batch_size: 512
+  learning_rate: 0.001
+  early_stopping_patience: 5
+  train_sample: 30000
+  models:
+    mlp:         {enabled: true, hidden: [256, 128, 64], dropout: 0.2}
+    autoencoder: {enabled: true, hidden: [128, 64], latent: 16}
+    lstm:        {enabled: true, hidden: 64, layers: 2, sequence_length: 12}
+    transformer: {enabled: true, d_model: 64, heads: 4, layers: 2, dropout: 0.1}
+    tabnet:      {enabled: true, n_d: 16, n_a: 16, n_steps: 3}
+
+# -----------------------------------------------------------------------------
+# Mathematical optimization
+# -----------------------------------------------------------------------------
+optimization:
+  enabled: true
+  vrp:
+    enabled: true
+    n_stops: 40                          # per instance
+    n_vehicles: 5
+    time_limit_seconds: 12
+    variants: [tsp, cvrp, vrptw]
+    vehicle_capacity_kg: 400        # forces a genuine multi-vehicle CVRP at n_stops=40
+    depot_index: 0
+  driver_scheduling:
+    enabled: true
+    n_drivers: 25
+    n_shifts: 21
+    max_shifts_per_driver: 5
+    min_drivers_per_shift: 2
+  fleet_allocation:
+    enabled: true
+    time_limit_seconds: 10
+    n_routes: 40
+    n_vehicles: 60
+    # Cost of handing a route to a third party. Left null it is derived as
+    # `subcontract_premium` x the median in-house assignment cost.
+    subcontract_cost_usd: null
+    subcontract_premium: 1.5
+    # Share of a route's stops that must be cold-chain before a refrigerated
+    # vehicle is mandatory.
+    cold_chain_route_threshold: 0.5
+  warehouse_allocation:
+    enabled: true
+    n_candidate_sites: 12
+    n_zones: 60
+    max_open_sites: 5
+  inventory:
+    enabled: true
+    holding_cost_per_unit_year: 2.4
+    order_cost: 65.0
+    service_level: 0.95
+    lead_time_days: 5
+  metaheuristics:
+    enabled: true
+    genetic_algorithm:    {population: 120, generations: 220, mutation_rate: 0.18, elite: 6}
+    simulated_annealing:  {iterations: 12000, t_start: 120.0, t_end: 0.5}
+    particle_swarm:       {particles: 60, iterations: 300, inertia: 0.72, c1: 1.5, c2: 1.5}
+
+# -----------------------------------------------------------------------------
+# Explainable AI
+# -----------------------------------------------------------------------------
+explainability:
+  enabled: true
+  shap:
+    enabled: true
+    sample_size: 2000
+    max_display: 20
+  permutation_importance:
+    enabled: true
+    n_repeats: 5
+    sample_size: 5000
+  lime:
+    enabled: true
+    n_instances: 5
+    n_features: 12
+    n_samples: 3000
+  partial_dependence:
+    enabled: true
+    top_n_features: 6
+
+# -----------------------------------------------------------------------------
+# Model registry and serving
+# -----------------------------------------------------------------------------
+registry:
+  enabled: true
+  path: ./artifacts/registry
+  promote_best_by: primary_metric
+  keep_last_n_versions: 5
+
+serving:
+  enabled: true
+  api_host: 127.0.0.1
+  api_port: 8000
+  batch_size_limit: 5000
+
+# -----------------------------------------------------------------------------
+# Reporting
+# -----------------------------------------------------------------------------
+reports:
+  enabled: true
+  formats: [html, markdown]
+  include_plots: true

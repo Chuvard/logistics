@@ -1,0 +1,20 @@
+pandas>=2.0
+numpy>=1.24
+scikit-learn>=1.3
+scipy>=1.10
+pyarrow>=12.0
+PyYAML>=6.0
+matplotlib>=3.7
+joblib>=1.3
+
+# Optional - each unlocks a specific capability, all degrade gracefully
+xgboost>=2.0          # XGBoost model
+lightgbm>=4.0         # LightGBM model
+catboost>=1.2         # CatBoost model
+ortools>=9.7          # VRP/CVRP/VRPTW routing and CP-SAT allocation
+shap>=0.44            # SHAP explanations
+# lime>=0.2           # LIME (an in-house surrogate is used when absent)
+# umap-learn>=0.5     # UMAP projection
+# torch>=2.0          # MLP / autoencoder / LSTM / transformer / TabNet
+# fastapi>=0.110      # prediction API (stdlib fallback otherwise)
+# uvicorn>=0.27
