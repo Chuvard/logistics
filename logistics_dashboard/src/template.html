@@ -1,0 +1,353 @@
+<!doctype html>
+<html lang="en" class="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LogiOptima · Logistics Optimization Platform</title>
+
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/plotly.js/2.27.0/plotly.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+
+<script>
+tailwind.config = {
+  darkMode: 'class',
+  theme: { extend: { colors: {
+    ink:    { 900:'#0b1020', 800:'#111832', 700:'#18213f', 600:'#212c50', 500:'#2d3a63' },
+    accent: { 400:'#7aa2f7', 500:'#4c7ef3', 600:'#3862d4' },
+    good:   '#3fa87a', warn:'#e0a24c', bad:'#e0574c', info:'#4cc7e0', violet:'#7a5cf0'
+  }, fontFamily: { sans:['Inter','-apple-system','Segoe UI','Roboto','sans-serif'] } } }
+}
+</script>
+
+<style>
+  :root { --card:#111832; --line:#212c50; --txt:#e8edf9; --mut:#8b97b5; --bg:#0b1020; }
+  html:not(.dark) { --card:#ffffff; --line:#e3e8f0; --txt:#1a2338; --mut:#68758f; --bg:#f5f7fb; }
+  body { background:var(--bg); color:var(--txt); font-family:Inter,-apple-system,Segoe UI,Roboto,sans-serif; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; }
+  .mut { color:var(--mut); }
+  .nav-item { transition:all .15s; border-left:3px solid transparent; }
+  .nav-item:hover { background:rgba(124,162,247,.09); }
+  .nav-item.active { background:rgba(76,126,243,.16); border-left-color:#4c7ef3; color:#7aa2f7; }
+  .module { display:none; } .module.active { display:block; animation:fade .25s ease; }
+  @keyframes fade { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:none} }
+  ::-webkit-scrollbar { width:9px; height:9px; }
+  ::-webkit-scrollbar-thumb { background:var(--line); border-radius:5px; }
+  ::-webkit-scrollbar-track { background:transparent; }
+  table.dt { width:100%; font-size:12.5px; border-collapse:collapse; }
+  table.dt th { text-align:left; padding:8px 10px; font-weight:600; color:var(--mut);
+    border-bottom:1px solid var(--line); position:sticky; top:0; background:var(--card); cursor:pointer;
+    white-space:nowrap; font-size:11px; text-transform:uppercase; letter-spacing:.5px; }
+  table.dt th:hover { color:var(--txt); }
+  table.dt td { padding:7px 10px; border-bottom:1px solid var(--line); white-space:nowrap; }
+  table.dt tbody tr:hover { background:rgba(124,162,247,.07); }
+  .pill { padding:2px 9px; border-radius:99px; font-size:11px; font-weight:600; display:inline-block; }
+  input[type=range] { -webkit-appearance:none; height:5px; border-radius:3px; background:var(--line); outline:none; }
+  input[type=range]::-webkit-slider-thumb { -webkit-appearance:none; width:17px; height:17px;
+    border-radius:50%; background:#4c7ef3; cursor:pointer; border:2px solid var(--card); box-shadow:0 0 0 1px #4c7ef3; }
+  .leaflet-container { background:#0e1526; border-radius:10px; font-family:inherit; }
+  html:not(.dark) .leaflet-container { background:#e8eef5; }
+  .leaflet-popup-content-wrapper { background:var(--card); color:var(--txt); border-radius:8px; }
+  .leaflet-popup-tip { background:var(--card); }
+  .spark { height:34px; }
+  .tt { position:absolute; pointer-events:none; background:var(--card); border:1px solid var(--line);
+    border-radius:7px; padding:7px 10px; font-size:12px; z-index:9999; opacity:0; transition:opacity .12s; box-shadow:0 4px 14px rgba(0,0,0,.3); }
+  .drawer { position:fixed; inset:0; background:rgba(4,8,20,.72); z-index:1000; display:none; }
+  .drawer.open { display:flex; }
+</style>
+</head>
+
+<body class="min-h-screen">
+
+<!-- ══════════════════════════ SIDEBAR ══════════════════════════ -->
+<aside id="sidebar" class="fixed left-0 top-0 h-full w-60 z-40 flex flex-col"
+       style="background:var(--card);border-right:1px solid var(--line)">
+  <div class="px-5 py-5 flex items-center gap-3" style="border-bottom:1px solid var(--line)">
+    <div class="w-9 h-9 rounded-lg flex items-center justify-center text-white font-bold text-lg"
+         style="background:linear-gradient(135deg,#4c7ef3,#7a5cf0)">L</div>
+    <div>
+      <div class="font-bold text-[15px] leading-tight">LogiOptima</div>
+      <div class="text-[10px] mut tracking-wider uppercase">Optimization Platform</div>
+    </div>
+  </div>
+
+  <nav id="nav" class="flex-1 overflow-y-auto py-3"></nav>
+
+  <div class="px-4 py-3 text-[10px] mut" style="border-top:1px solid var(--line)">
+    <div id="footMeta"></div>
+  </div>
+</aside>
+
+<!-- ══════════════════════════ MAIN ══════════════════════════ -->
+<div class="ml-60">
+
+  <!-- topbar -->
+  <header class="sticky top-0 z-30 px-6 py-3 flex items-center gap-4 flex-wrap"
+          style="background:var(--card);border-bottom:1px solid var(--line)">
+    <div class="flex-1 min-w-[180px]">
+      <h1 id="pageTitle" class="text-lg font-bold leading-tight">Executive Dashboard</h1>
+      <p id="pageSub" class="text-[11.5px] mut"></p>
+    </div>
+
+    <div class="flex items-center gap-2 flex-wrap">
+      <select id="fRegion" class="text-xs rounded-lg px-3 py-1.5 border"
+              style="background:var(--bg);border-color:var(--line);color:var(--txt)"></select>
+      <select id="fDomain" class="text-xs rounded-lg px-3 py-1.5 border"
+              style="background:var(--bg);border-color:var(--line);color:var(--txt)"></select>
+      <button id="btnReset" class="text-xs rounded-lg px-3 py-1.5 border hover:opacity-80"
+              style="border-color:var(--line);color:var(--mut)">Reset</button>
+      <div class="w-px h-6" style="background:var(--line)"></div>
+      <button id="btnExport" class="text-xs rounded-lg px-3 py-1.5 font-semibold text-white"
+              style="background:#4c7ef3">Export</button>
+      <button id="btnTheme" class="text-xs rounded-lg px-3 py-1.5 border"
+              style="border-color:var(--line);color:var(--mut)">◐</button>
+    </div>
+  </header>
+
+  <div id="filterNote" class="px-6 pt-3 hidden">
+    <div class="text-[11.5px] rounded-lg px-3 py-2"
+         style="background:rgba(76,126,243,.12);border:1px solid rgba(76,126,243,.3)">
+      <span id="filterNoteText"></span>
+    </div>
+  </div>
+
+  <main class="p-6 space-y-5">
+
+    <!-- ═══ 1. EXECUTIVE ═══ -->
+    <section id="m-executive" class="module active space-y-5">
+      <div id="exKpis" class="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3"></div>
+      <div class="grid grid-cols-1 xl:grid-cols-3 gap-4">
+        <div class="card p-4 xl:col-span-2"><div class="text-sm font-semibold mb-1">Revenue, cost and margin</div>
+          <div class="text-[11px] mut mb-2">Monthly, filtered</div><div id="exTrend" style="height:300px"></div></div>
+        <div class="card p-4"><div class="text-sm font-semibold mb-1">Cost structure</div>
+          <div class="text-[11px] mut mb-2">Share of total delivery cost</div><div id="exCost" style="height:300px"></div></div>
+      </div>
+      <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
+        <div class="card p-4"><div class="text-sm font-semibold mb-1">Performance by business domain</div>
+          <div class="text-[11px] mut mb-2">Bubble size = order volume</div><div id="exDomain" style="height:330px"></div></div>
+        <div class="card p-4"><div class="text-sm font-semibold mb-1">Regional contribution</div>
+          <div class="text-[11px] mut mb-2">Orders, margin and on-time rate</div><div id="exRegion" style="height:330px"></div></div>
+      </div>
+      <div class="card p-4"><div class="text-sm font-semibold mb-2">Domain scorecard</div>
+        <div class="overflow-auto max-h-96"><table class="dt" id="exTable"></table></div></div>
+    </section>
+
+    <!-- ═══ 2. OPERATIONS ═══ -->
+    <section id="m-operations" class="module space-y-5">
+      <div id="opKpis" class="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3"></div>
+      <div class="grid grid-cols-1 xl:grid-cols-3 gap-4">
+        <div class="card p-4 xl:col-span-2"><div class="text-sm font-semibold mb-1">Demand heatmap</div>
+          <div class="text-[11px] mut mb-2">Orders by weekday and hour of day</div><div id="opHeat" style="height:290px"></div></div>
+        <div class="card p-4"><div class="text-sm font-semibold mb-1">Order status mix</div>
+          <div class="text-[11px] mut mb-2">Share of all orders</div><div id="opStatus" style="height:290px"></div></div>
+      </div>
+      <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
+        <div class="card p-4"><div class="text-sm font-semibold mb-1">Hourly throughput and reliability</div>
+          <div class="text-[11px] mut mb-2">Volume against on-time rate</div><div id="opHour" style="height:300px"></div></div>
+        <div class="card p-4"><div class="text-sm font-semibold mb-1">Network congestion profile</div>
+          <div class="text-[11px] mut mb-2">Mean congestion index by hour</div><div id="opCongestion" style="height:300px"></div></div>
+      </div>
+      <div class="grid grid-cols-1 xl:grid-cols-3 gap-4">
+        <div class="card p-4"><div class="text-sm font-semibold mb-1">Traffic impact</div>
+          <div class="text-[11px] mut mb-2">Late rate by congestion level</div><div id="opTraffic" style="height:260px"></div></div>
+        <div class="card p-4"><div class="text-sm font-semibold mb-1">Weather impact</div>
+          <div class="text-[11px] mut mb-2">Late rate by condition</div><div id="opWeather" style="height:260px"></div></div>
+        <div class="card p-4"><div class="text-sm font-semibold mb-1">Exceptions logged</div>
+          <div class="text-[11px] mut mb-2">Ground-truth anomaly flags</div><div id="opExceptions" style="height:260px"></div></div>
+      </div>
+    </section>
+
+    <!-- ═══ 3. FLEET ═══ -->
+    <section id="m-fleet" class="module space-y-5">
+      <div id="flKpis" class="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3"></div>
+      <div class="grid grid-cols-1 xl:grid-cols-3 gap-4">
+        <div class="card p-4"><div class="text-sm font-semibold mb-1">Fleet composition</div>
+          <div class="text-[11px] mut mb-2">Vehicles by type</div><div id="flType" style="height:280px"></div></div>
+        <div class="card p-4"><div class="text-sm font-semibold mb-1">Age profile</div>
+          <div class="text-[11px] mut mb-2">Vehicles by age in years</div><div id="flAge" style="height:280px"></div></div>
+        <div class="card p-4"><div class="text-sm font-semibold mb-1">Energy mix</div>
+          <div class="text-[11px] mut mb-2">Vehicles by fuel type</div><div id="flFuel" style="height:280px"></div></div>
+      </div>
+      <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
+        <div class="card p-4"><div class="text-sm font-semibold mb-1">Route capacity utilisation</div>
+          <div class="text-[11px] mut mb-2">Load factor against stops per route</div><div id="flUtil" style="height:300px"></div></div>
+        <div class="card p-4"><div class="text-sm font-semibold mb-1">Maintenance cost and downtime</div>
+          <div class="text-[11px] mut mb-2">By intervention type</div><div id="flMaint" style="height:300px"></div></div>
+      </div>
+      <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
+        <div class="card p-4"><div class="text-sm font-semibold mb-2">Vehicle register</div>
+          <div class="overflow-auto max-h-96"><table class="dt" id="flTable"></table></div></div>
+        <div class="card p-4"><div class="text-sm font-semibold mb-2">Top courier performance</div>
+          <div class="overflow-auto max-h-96"><table class="dt" id="flDrivers"></table></div></div>
+      </div>
+    </section>
+
+    <!-- ═══ 4. WAREHOUSE ═══ -->
+    <section id="m-warehouse" class="module space-y-5">
+      <div id="whKpis" class="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3"></div>
+      <div class="grid grid-cols-1 xl:grid-cols-3 gap-4">
+        <div class="card p-4 xl:col-span-2"><div class="text-sm font-semibold mb-1">Site throughput vs rated capacity</div>
+          <div class="text-[11px] mut mb-2">Peak-day utilisation; bars past 100% exceeded rated throughput</div>
+          <div id="whCapacity" style="height:320px"></div></div>
+        <div class="card p-4"><div class="text-sm font-semibold mb-1">Automation level</div>
+          <div class="text-[11px] mut mb-2">Sites and volume handled</div><div id="whAuto" style="height:320px"></div></div>
+      </div>
+      <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
+        <div class="card p-4"><div class="text-sm font-semibold mb-1">Network throughput</div>
+          <div class="text-[11px] mut mb-2">Daily orders across all sites</div><div id="whDaily" style="height:290px"></div></div>
+        <div class="card p-4"><div class="text-sm font-semibold mb-1">Inventory by category</div>
+          <div class="text-[11px] mut mb-2">Units held against stockout rate</div><div id="whInv" style="height:290px"></div></div>
+      </div>
+      <div class="card p-4"><div class="text-sm font-semibold mb-2">Site performance</div>
+        <div class="overflow-auto max-h-96"><table class="dt" id="whTable"></table></div></div>
+    </section>
+
+    <!-- ═══ 5. DELIVERY MONITORING (map) ═══ -->
+    <section id="m-delivery" class="module space-y-5">
+      <div id="dlKpis" class="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-6 gap-3"></div>
+      <div class="card p-4">
+        <div class="flex items-center justify-between mb-3 flex-wrap gap-3">
+          <div><div class="text-sm font-semibold">Live network map</div>
+            <div class="text-[11px] mut">Vehicles, routes, warehouses, demand, traffic and weather</div></div>
+          <div id="mapLayers" class="flex gap-1.5 flex-wrap"></div>
+        </div>
+        <div id="map" style="height:560px" class="rounded-lg"></div>
+        <div id="mapLegend" class="flex gap-4 flex-wrap mt-3 text-[11px] mut"></div>
+      </div>
+      <div class="grid grid-cols-1 xl:grid-cols-3 gap-4">
+        <div class="card p-4"><div class="text-sm font-semibold mb-1">SLA outcome</div>
+          <div class="text-[11px] mut mb-2">On-time against breach by priority</div><div id="dlSla" style="height:280px"></div></div>
+        <div class="card p-4"><div class="text-sm font-semibold mb-1">Delivery distance mix</div>
+          <div class="text-[11px] mut mb-2">Sampled deliveries by distance band</div><div id="dlDist" style="height:280px"></div></div>
+        <div class="card p-4"><div class="text-sm font-semibold mb-1">Daily reliability</div>
+          <div class="text-[11px] mut mb-2">Rolling on-time rate</div><div id="dlDaily" style="height:280px"></div></div>
+      </div>
+    </section>
+
+    <!-- ═══ 6. DEMAND FORECAST ═══ -->
+    <section id="m-forecast" class="module space-y-5">
+      <div id="fcKpis" class="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-3"></div>
+      <div class="card p-4">
+        <div class="flex items-start justify-between flex-wrap gap-2 mb-2">
+          <div><div class="text-sm font-semibold">Demand forecast</div>
+            <div class="text-[11px] mut" id="fcMethod"></div></div>
+          <div class="text-[11px] mut" id="fcAccuracy"></div>
+        </div>
+        <div id="fcChart" style="height:380px"></div>
+      </div>
+      <div class="grid grid-cols-1 xl:grid-cols-3 gap-4">
+        <div class="card p-4"><div class="text-sm font-semibold mb-1">Weekly pattern</div>
+          <div class="text-[11px] mut mb-2">Day-of-week multiplier</div><div id="fcDow" style="height:270px"></div></div>
+        <div class="card p-4"><div class="text-sm font-semibold mb-1">Annual seasonality</div>
+          <div class="text-[11px] mut mb-2">Month-of-year multiplier</div><div id="fcMonth" style="height:270px"></div></div>
+        <div class="card p-4"><div class="text-sm font-semibold mb-1">Demand by domain</div>
+          <div class="text-[11px] mut mb-2">Share of total volume</div><div id="fcDomain" style="height:270px"></div></div>
+      </div>
+    </section>
+
+    <!-- ═══ 7. SIMULATOR ═══ -->
+    <section id="m-simulator" class="module space-y-5">
+      <div class="card p-4">
+        <div class="text-sm font-semibold mb-1">Scenario simulator</div>
+        <div class="text-[11px] mut mb-4">Response curves are calibrated from the dataset, not assumed —
+          see the methodology note below.</div>
+        <div id="simControls" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-x-6 gap-y-5"></div>
+        <div class="flex gap-2 mt-5 flex-wrap">
+          <button id="simReset" class="text-xs px-3 py-2 rounded-lg border" style="border-color:var(--line)">Reset to baseline</button>
+          <button id="simSave" class="text-xs px-3 py-2 rounded-lg font-semibold text-white" style="background:#4c7ef3">Save scenario</button>
+          <button id="simClear" class="text-xs px-3 py-2 rounded-lg border" style="border-color:var(--line)">Clear saved</button>
+        </div>
+      </div>
+      <div id="simKpis" class="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3"></div>
+      <div class="card p-3.5"><div id="simBinding" class="text-[12.5px] leading-relaxed"></div></div>
+      <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
+        <div class="card p-4"><div class="text-sm font-semibold mb-1">Baseline vs scenario</div>
+          <div class="text-[11px] mut mb-2">Key operating measures</div><div id="simCompare" style="height:320px"></div></div>
+        <div class="card p-4"><div class="text-sm font-semibold mb-1">Cost bridge</div>
+          <div class="text-[11px] mut mb-2">Where the change comes from</div><div id="simBridge" style="height:320px"></div></div>
+      </div>
+      <div class="card p-4"><div class="text-sm font-semibold mb-2">Saved scenarios</div>
+        <div class="overflow-auto max-h-80"><table class="dt" id="simTable"></table></div></div>
+      <div class="card p-4">
+        <div class="text-sm font-semibold mb-2">How the simulator works</div>
+        <div id="simMethod" class="text-[12px] mut space-y-2 leading-relaxed"></div>
+      </div>
+    </section>
+
+    <!-- ═══ 8. AI RECOMMENDATIONS ═══ -->
+    <section id="m-recommendations" class="module space-y-5">
+      <div id="recKpis" class="grid grid-cols-2 md:grid-cols-4 gap-3"></div>
+      <div class="grid grid-cols-1 xl:grid-cols-3 gap-4">
+        <div class="card p-4 xl:col-span-2"><div class="text-sm font-semibold mb-1">Opportunity value</div>
+          <div class="text-[11px] mut mb-2">Quantified annual impact by recommendation</div>
+          <div id="recChart" style="height:320px"></div></div>
+        <div class="card p-4"><div class="text-sm font-semibold mb-1">Effort vs impact</div>
+          <div class="text-[11px] mut mb-2">Prioritisation quadrant</div><div id="recQuad" style="height:320px"></div></div>
+      </div>
+      <div id="recList" class="space-y-3"></div>
+      <div class="card p-4"><div class="text-sm font-semibold mb-2">Optimisation results feeding these recommendations</div>
+        <div class="overflow-auto"><table class="dt" id="recOptTable"></table></div></div>
+    </section>
+
+    <!-- ═══ 9. EXPLAINABLE AI ═══ -->
+    <section id="m-xai" class="module space-y-5">
+      <div id="xaiKpis" class="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3"></div>
+      <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
+        <div class="card p-4"><div class="text-sm font-semibold mb-1">Global feature attribution</div>
+          <div class="text-[11px] mut mb-2">Mean |SHAP| — share of total attribution</div>
+          <div id="xaiShap" style="height:400px"></div></div>
+        <div class="card p-4"><div class="text-sm font-semibold mb-1">Model leaderboard</div>
+          <div class="text-[11px] mut mb-2">Held-out test performance</div><div id="xaiModels" style="height:400px"></div></div>
+      </div>
+      <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
+        <div class="card p-4"><div class="text-sm font-semibold mb-1">SHAP vs permutation importance</div>
+          <div class="text-[11px] mut mb-2" id="xaiAgreeNote"></div><div id="xaiAgree" style="height:330px"></div></div>
+        <div class="card p-4"><div class="text-sm font-semibold mb-1">Partial dependence</div>
+          <div class="text-[11px] mut mb-2">Average effect of a feature on the prediction</div>
+          <div id="xaiPdp" style="height:330px"></div></div>
+      </div>
+      <div class="card p-4">
+        <div class="flex items-center justify-between mb-1 flex-wrap gap-2">
+          <div><div class="text-sm font-semibold">Individual prediction explanation</div>
+            <div class="text-[11px] mut">Per-instance SHAP contributions — how one delivery got its score</div></div>
+          <select id="xaiInstance" class="text-xs rounded-lg px-3 py-1.5 border"
+                  style="background:var(--bg);border-color:var(--line);color:var(--txt)"></select>
+        </div>
+        <div id="xaiLocal" style="height:320px"></div>
+      </div>
+      <div class="card p-4"><div class="text-sm font-semibold mb-2">Model card</div>
+        <div id="xaiCard" class="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-2 text-[12.5px]"></div></div>
+    </section>
+
+  </main>
+</div>
+
+<!-- ══════════════════════════ EXPORT DRAWER ══════════════════════════ -->
+<div id="drawer" class="drawer items-center justify-center p-6">
+  <div class="card w-full max-w-4xl max-h-[88vh] overflow-auto p-5">
+    <div class="flex items-center justify-between mb-4">
+      <div><div class="text-base font-bold">Export</div>
+        <div class="text-[11.5px] mut">Preview and download the current view</div></div>
+      <button id="drawerClose" class="text-xl mut hover:opacity-70 px-2">×</button>
+    </div>
+    <div class="flex gap-2 mb-4 flex-wrap">
+      <button class="exTab text-xs px-3 py-2 rounded-lg font-semibold" data-t="pdf">PDF preview</button>
+      <button class="exTab text-xs px-3 py-2 rounded-lg font-semibold" data-t="ppt">PowerPoint preview</button>
+      <button class="exTab text-xs px-3 py-2 rounded-lg font-semibold" data-t="xls">Excel export</button>
+    </div>
+    <div id="exBody"></div>
+  </div>
+</div>
+
+<div id="tooltip" class="tt"></div>
+
+<script id="payload" type="application/json">__PAYLOAD__</script>
+<script>
+__APP_JS__
+</script>
+</body>
+</html>
